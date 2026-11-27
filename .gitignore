@@ -1,0 +1,13 @@
+# Build output. Everything here is derived from the sources beside it.
+build/
+
+# Bundles produced while testing. `apack` writes a directory per application.
+dist/
+out/
+
+# Editor and OS noise.
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
