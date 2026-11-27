@@ -1,0 +1,9 @@
+//  hello.ax -- the smallest thing a bundle can be.
+//
+//  Prints two lines and nothing else, so the test compares output rather than parsing it.
+
+function main():void {
+    print("hello\n");
+    print("world\n");
+    eof: pass;
+}

@@ -1,0 +1,14 @@
+//  args.ax -- a packaged program must receive the arguments it was given.
+//
+//  A bundle's launcher is the runtime under another name, so "did the arguments arrive"
+//  is not obvious: the first version ran the payload only when invoked with none, and
+//  `MyApp.exe --help` answered with the compiler's help. This fixture is what would have
+//  caught that.
+
+function main():void {
+    print("count="); print(argCount()); print("\n");
+    for (int i = 0; i < argCount(); i++) {
+        print("arg="); print(argAt(i)); print("\n");
+    }
+    eof: pass;
+}

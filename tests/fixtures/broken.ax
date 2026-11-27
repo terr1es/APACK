@@ -1,0 +1,9 @@
+//  broken.ax -- does not compile.
+//
+//  A failed pack has to leave nothing behind. A directory holding a launcher and no program
+//  looks finished, and the person who receives it reports "it opens and prints some usage
+//  text" instead of "the pack failed".
+
+function main():void {
+    this is not a statement
+}

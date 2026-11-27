@@ -45,14 +45,39 @@ than working it out again:
 
 ```sh
 acvm deps demo.ax
-io
+io	C:/Axiom/stdlib/io.axd
 ```
 
-One library name per line. Scanning the sources for `import` and `library` declarations here
-would be a second implementation of module resolution, and the two would diverge the first
-time a search rule changed. The failure mode is not an error message — it is a bundle that
-omits a library, works on the machine that produced it, and traps on the first call at the
-recipient's.
+The library name, a tab, and the file that declared it. Scanning the sources for `import`
+and `library` declarations here would be a second implementation of module resolution, and
+the two would diverge the first time a search rule changed. The failure mode is not an error
+message — it is a bundle that omits a library, works on the machine that produced it, and
+traps on the first call at the recipient's.
+
+The path is not decoration. A module that lives in the project rather than in the standard
+library keeps its shared object beside its own `.axd`, so the search starts there and falls
+back to the runtime directory. Knowing only the name would send it to the wrong place and
+report a missing library that is sitting right next to the source.
+
+## Verification
+
+Nothing is run. A GUI program would open a window and one that reads input would block, so
+"run it once after packing" is not available here. The two conditions that actually reach a
+user are checked instead:
+
+1. **The payload reads back.** `acvm verify` parses the compiled module through the same
+   reader the VM uses, which catches truncation, a bad container version, and a file that is
+   not what was just compiled.
+2. **Every shipped library loads from the bundle.** `libraryLoads` opens each shared object
+   with its own directory as the search root, which catches both a missing library and one
+   whose own dependencies are missing — the copy reports success either way.
+
+A failure removes everything the run wrote. A directory holding a launcher and no program
+looks finished, and the person who receives it reports "it opens and prints some usage text"
+rather than "the pack failed".
+
+Exit codes: `0` success, `1` compile failed, `2` usage or a missing input, `3` a required
+library was not found, `4` a file could not be copied, `5` verification failed.
 
 ## Usage
 
@@ -76,6 +101,20 @@ APACK is run through `acvm run`. A packaged APACK has no compiler beside it, so 
 
 Nothing else. There is no build step: the packager is a script.
 
+## Tests
+
+```sh
+./tests/run.sh
+ACVM=/path/to/acvm ./tests/run.sh     # a build other than the one on PATH
+```
+
+Four checks: a bundle runs and prints what the program prints, a bundle hands its arguments
+to the program, a failed pack leaves nothing behind, and a missing runtime is refused.
+
+They exist because the packager had none: every claim about it was checked by hand, once, by
+whoever had just changed it. Two defects shipped that way — a launcher that dropped its
+arguments, and a packer that looked for the compiler at its own path.
+
 ## What it does not do
 
 - **Single-file output.** One executable containing the program and the standard library.
@@ -86,6 +125,8 @@ Nothing else. There is no build step: the packager is a script.
 - **Checksums.** `sha256.ax` could produce one; it is left out so this file stays a
   demonstration of packaging rather than of hashing.
 - **Data files.** Only the program and its libraries are packaged.
+- **A record of what produced a bundle.** Nothing in the output says which compiler built it
+  or when, so a bug report arrives as an executable and nothing else.
 
 A native implementation of the packager exists and does all four. It is not published here:
 two implementations in one repository make the claim above harder to read, and the

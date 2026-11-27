@@ -83,6 +83,22 @@ function runCapture(string command, ptr int exitCode):string {
     eof: pass;
 }
 
+/// Splits `line` at its first tab. The part before it is returned; `rest` receives the rest.
+///
+/// Compared by byte value rather than against a tab literal: the byte is unambiguous, and
+/// a line that arrives with no tab at all has to come back whole rather than empty.
+function splitTab(string line, ptr string rest):string {
+    for (int i = 0; i < line.length; i++) {
+        if (strByteAt(line, i) == 9) {
+            @rest = substring(line, i + 1, line.length);
+            return substring(line, 0, i);
+        }
+    }
+    @rest = "";
+    return line;
+    eof: pass;
+}
+
 /// Creates `path` and every missing parent, like `mkdir -p`.
 ///
 /// `makeDir` makes one level and fails silently when the parent is absent, which turns a
@@ -116,6 +132,37 @@ function quoted(string path):string {
     eof: pass;
 }
 
+/// Removes what a failed pack wrote.
+///
+/// A bundle is several files, and a failure partway through leaves some of them behind. That
+/// is worse than writing nothing: a directory holding `MyApp.exe` and no program looks
+/// finished, and the person who receives it reports "it opens and prints some usage text"
+/// rather than "the pack failed".
+///
+/// Only the files this run created are named, so a directory that already held something is
+/// not emptied.
+function cleanup(string outputDir, string appName, string libraries):void {
+    removeFile(outputDir + "/" + appName + ".exe");
+    removeFile(outputDir + "/" + appName + ".acvm");
+    SplitList parts = makeSplit(libraries, "\n");
+    for (int i = 0; i < splitCount(#parts); i++) {
+        string name = splitAt(#parts, i);
+        if (name.length > 0) { removeFile(outputDir + "/" + name + ".dll"); }
+    }
+    splitFree(#parts);
+    eof: pass;
+}
+
+/// Stops with an exit code.
+///
+/// Returning normally after a failure reports success: the shell sees 0, and a build script
+/// that asked for a bundle moves on to the next step as though it had one. The codes follow
+/// the native packer's, so a script written against one works with the other.
+function stop(int code):void {
+    exitProcess(code);
+    eof: pass;
+}
+
 function main():void {
     Doc d = docNew(0);
     ptr CliArgs args = cliParseArgvWith(#d, "o:name:runtime:");
@@ -123,12 +170,12 @@ function main():void {
     if (cliFailed(args)) {
         print("apack: "); print(cliErrorText(args)); print("\n");
         docFree(#d);
-        return;
+        stop(2);
     }
     if (cliPositionalCount(args) < 1) {
         print("usage: apack <file.ax> -o <dir> [--name <name>] [--runtime <dir>]\n");
         docFree(#d);
-        return;
+        stop(2);
     }
 
     string source = cliPositionalAt(args, 0);
@@ -136,7 +183,7 @@ function main():void {
     if (outputDir.length == 0) {
         print("apack: -o is required: a bundle needs somewhere to go\n");
         docFree(#d);
-        return;
+        stop(2);
     }
     string appName = cliValue(args, "name", stemOf(source));
 
@@ -159,13 +206,13 @@ function main():void {
         print("apack: cannot find acvm in "); print(runtimeDir); print("\n");
         print("       pass --runtime <dir> to point at the toolchain\n");
         docFree(#d);
-        return;
+        stop(2);
     }
 
     if (!fileExists(source)) {
         print("apack: no such file: "); print(source); print("\n");
         docFree(#d);
-        return;
+        stop(2);
     }
 
     makePath(outputDir);
@@ -181,7 +228,7 @@ function main():void {
         print(buildOutput);
         removeFile(payload);   // a half-written bundle looks finished
         docFree(#d);
-        return;
+        stop(1);
     }
 
     // ── dependencies ────────────────────────────────────────────────────────
@@ -194,7 +241,21 @@ function main():void {
         print("apack: cannot read the dependency list\n");
         removeFile(payload);
         docFree(#d);
-        return;
+        stop(1);
+    }
+
+    // ── verify the payload ──────────────────────────────────────────────────
+    //
+    // Read back through the compiler's own reader. This is the half of "run it once" that
+    // does not run anything: a truncated write, a container the runtime will refuse, and a
+    // file that is not what was just compiled all look identical until someone opens it.
+    code[0] = 0;
+    runCapture(quoted(compiler) + " verify " + quoted(payload), code);
+    if (code[0] != 0) {
+        print("apack: the payload does not read back; the bundle is not usable\n");
+        removeFile(payload);
+        docFree(#d);
+        stop(5);
     }
 
     // ── copy ────────────────────────────────────────────────────────────────
@@ -202,33 +263,69 @@ function main():void {
         print("apack: cannot copy the runtime from "); print(runtimeDir); print("\n");
         removeFile(payload);
         docFree(#d);
-        return;
+        stop(4);
     }
 
     SplitList lines = makeSplit(libraries, "\n");
     int copied = 0;
+    string copiedNames = "";   // one per line, for cleanup if a later step fails
     for (int i = 0; i < splitCount(#lines); i++) {
         // `_popen` goes through cmd, so the output is CRLF: splitting on "\n" leaves a
         // trailing carriage return on every line but the last, and a file name with an
         // invisible character at the end is a file that does not exist.
-        string name = trimSuffix(splitAt(#lines, i), "\r");
-        if (name.length == 0) { continue; }
-        string from = runtimeDir + "/" + name + ".dll";
-        if (!fileExists(from)) {
-            print("apack: required library not found: "); print(name); print("\n");
-            splitFree(#lines);
-            removeFile(payload);
-            docFree(#d);
-            return;
+        string entry = trimSuffix(splitAt(#lines, i), "\r");
+        if (entry.length == 0) { continue; }
+
+        // `name<TAB>path`, where the path is the file that declared the library.
+        string declaredPath = "";
+        string name = splitTab(entry, #declaredPath);
+
+        // A module in the project keeps its shared object beside its own `.axd`; a standard
+        // module keeps its beside the compiler. Trying the declaring file's directory first
+        // is what makes a project-local module packable at all -- knowing only the name
+        // would send the search to the wrong directory and report a missing library that is
+        // sitting right next to the source.
+        string from = "";
+        if (declaredPath.length > 0) {
+            string beside = dirName(declaredPath) + "/" + name + ".dll";
+            if (fileExists(beside)) { from = beside; }
         }
-        if (copyFile(from, outputDir + "/" + name + ".dll") != 0) {
+        if (from.length == 0) {
+            string standard = runtimeDir + "/" + name + ".dll";
+            if (fileExists(standard)) { from = standard; }
+        }
+        if (from.length == 0) {
+            print("apack: required library not found: "); print(name); print("\n");
+            print("       looked beside "); print(declaredPath); print("\n");
+            print("       and beside the runtime ("); print(runtimeDir); print(")\n");
+            splitFree(#lines);
+            cleanup(outputDir, appName, copiedNames);
+            docFree(#d);
+            stop(3);
+        }
+
+        string to = outputDir + "/" + name + ".dll";
+        if (copyFile(from, to) != 0) {
             print("apack: cannot copy "); print(from); print("\n");
             splitFree(#lines);
-            removeFile(payload);
+            cleanup(outputDir, appName, copiedNames);
             docFree(#d);
-            return;
+            stop(4);
+        }
+
+        // A copy that succeeded can still be useless. A library whose own dependencies are
+        // missing loads on this machine and fails on the recipient's, and the copy reported
+        // success in both cases -- so the question asked here is not "did it copy" but "does
+        // it load from where it now sits".
+        if (!libraryLoads(to)) {
+            print("apack: "); print(name); print(".dll does not load from the bundle\n");
+            splitFree(#lines);
+            cleanup(outputDir, appName, copiedNames);
+            docFree(#d);
+            stop(5);
         }
         copied = copied + 1;
+        copiedNames = copiedNames + name + "\n";
     }
     splitFree(#lines);
 
