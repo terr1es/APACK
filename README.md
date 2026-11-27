@@ -121,7 +121,7 @@ apack <file.ax> -o <dir> [options]
 
   -o <dir>          产物目录（必需）
   --name <name>     启动器名字，不含扩展名（默认取源文件名）
-  --runtime <dir>   acvm.exe 和标准库所在目录（默认是 apack 自己所在目录）
+  --runtime <dir>   acvm.exe 和标准库所在目录（默认见上文「运行时在哪找」）
   -O0 .. -O4        优化等级（默认 -O2）
 ```
 
