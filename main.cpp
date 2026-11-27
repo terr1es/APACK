@@ -29,10 +29,14 @@ void printUsage(std::ostream& out) {
         << "                    (default: $ACVM_HOME, else next to this program, else\n"
         << "                    the Axiom build directory it was compiled against)\n"
         << "  -O0 .. -O4        Optimization level (default: -O2)\n"
+        << "  --single          One executable instead of a directory: the program is\n"
+        << "                    appended to a statically linked runtime, so nothing sits\n"
+        << "                    beside it and nothing is extracted at run time\n"
         << "\n"
         << "What it writes: <dir>/<name>.exe, <dir>/<name>.acvm, and every shared\n"
         << "library the program needs. The output is self-contained: it does not\n"
-        << "read the toolchain, the standard library sources, or the source file.\n";
+        << "read the toolchain, the standard library sources, or the source file.\n"
+        << "With --single, only <dir>/<name>.exe.\n";
 }
 
 /// The directory holding this executable.
@@ -143,6 +147,8 @@ int main(int argc, char** argv) {
         } else if (arg.size() == 3 && arg[0] == '-' && arg[1] == 'O' && arg[2] >= '0' &&
                    arg[2] <= '4') {
             request.optimize = arg[2] - '0';
+        } else if (arg == "--single") {
+            request.singleFile = true;
         } else if (arg.size() > 1 && arg[0] == '-') {
             return usageError("unknown option '" + arg + "'");
         } else {

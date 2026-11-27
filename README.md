@@ -1,7 +1,8 @@
 # APACK
 
-A bundler for Axiom programs. It turns a `.ax` source file into a self-contained directory
-that runs on a machine which has neither the compiler nor the standard library installed.
+A bundler for Axiom programs. It turns a `.ax` source file into a self-contained directory,
+or a single executable, that runs on a machine which has neither the compiler nor the
+standard library installed.
 
 ```sh
 apack demo.ax -o dist/MyApp --name MyApp
@@ -12,6 +13,15 @@ dist/MyApp/
   MyApp.exe      the runtime, renamed
   MyApp.acvm     the compiled bytecode
   gui.dll        only the libraries the program actually reaches
+```
+
+```sh
+apack demo.ax -o dist/MyApp --name MyApp --single
+```
+
+```
+dist/MyApp/
+  MyApp.exe      2.7 MB: the runtime, the program, and the standard library
 ```
 
 The recipient needs no toolchain, no source, and no build step. They run `MyApp.exe`.
@@ -43,8 +53,9 @@ program opens a window, and a program that reads input blocks the packager indef
 The two conditions that actually reach a user are checked instead, and neither of them
 executes code the program's author wrote:
 
-1. **The payload parses.** The bytecode is read back through the disassembler, which
-   catches truncation and container-version mismatch.
+1. **The payload parses.** The bytecode is read back and loaded as a module, which catches
+   truncation and container-version mismatch. In single-file mode it is read back out of the
+   executable rather than off the intermediate file, so the append itself is verified.
 2. **Every shipped library loads from the bundle.** Each shared object is loaded with its
    own directory as the search root, which catches both a missing library and a library
    whose own dependencies are missing.
@@ -66,6 +77,12 @@ cmake --build build
 
 The output is `build/apack.exe`.
 
+`--single` needs `acvm-static.exe` in the Axiom build directory, which is a separate target:
+
+```sh
+cmake --build <Axiom build> --target acvm_static
+```
+
 This project consumes Axiom as a library and does not build it. `ACVM_ROOT` points at a
 checkout and `ACVM_BUILD` at a configured build of that checkout; if the libraries are
 absent, configuration stops with a message rather than producing a half-configured tree.
@@ -84,7 +101,32 @@ apack <file.ax> -o <dir> [options]
   --name <name>     launcher name, without extension (default: the source's stem)
   --runtime <dir>   where acvm.exe and the standard library live
   -O0 .. -O4        optimization level (default: -O2)
+  --single          one executable instead of a directory
 ```
+
+## Single-file output
+
+`--single` appends the compiled program to `acvm-static.exe` — a build of the runtime with
+all ten standard-library modules linked in — and removes the intermediate bytecode. What
+remains is one file.
+
+Nothing is extracted at run time. The bytes are read out of the executable's own image and
+parsed from memory, so there is no temporary directory to clean up, no first-run delay, and
+no residue if the program is killed. The container is:
+
+```
+[ executable ][ payload ][ footer ]
+```
+
+The footer is a fixed 24 bytes at the very end, holding a magic value, the payload's offset,
+and its length; locating it is a seek to `fileSize - 24` and a comparison. Appending is safe
+because the Windows loader reads the PE headers and section table and ignores whatever
+follows the last section.
+
+Single-file output covers the standard library and nothing else. A program that imports a
+module living in its own project — `gui`, for example — is refused, because that module has
+no static counterpart and the bundle would fail on the recipient's machine at the first
+call. Such programs use a directory bundle, which ships the library beside the executable.
 
 ## Where the runtime is found
 
@@ -156,9 +198,6 @@ Regression test:
 
 ## Not yet implemented
 
-- **Single-file output.** The payload would be appended to the executable and read from
-  itself; no extraction is required, because all ten standard-library modules link into one
-  binary without symbol conflicts. The result is a single PE of roughly 1.4 MB.
 - **Version resource, icon, and manifest**, embedded at pack time with `llvm-rc`.
 - **Checksums**, emitted as `app.exe.sha256`.
 - **Self-hosting**, meaning `apack` producing a bundle of `apack` that can itself produce

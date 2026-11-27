@@ -22,6 +22,12 @@ struct PackRequest {
     /// Optimization level for the compiled program, 0-4. Defaults to 2, the same default
     /// the compiler uses.
     int optimize = 2;
+    /// Produce one executable instead of a directory.
+    ///
+    /// The payload is appended to a statically linked runtime, which already contains the
+    /// standard library, so the result has no files beside it. Nothing is extracted at run
+    /// time: the program is read out of the executable's own bytes.
+    bool singleFile = false;
 };
 
 /// One file the bundle needs.
