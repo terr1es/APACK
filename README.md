@@ -1,146 +1,167 @@
 # APACK
 
-**Axiom 程序的打包器。** 把一个 `.ax` 程序变成能直接发给别人的东西。
+A bundler for Axiom programs. It turns a `.ax` source file into a self-contained directory
+that runs on a machine which has neither the compiler nor the standard library installed.
 
-```
+```sh
 apack demo.ax -o dist/MyApp --name MyApp
 ```
 
 ```
 dist/MyApp/
-  MyApp.exe        ← 运行时，改名而来
-  MyApp.acvm       ← 编译好的字节码
-  gui.dll          ← 只有闭包里实际用到的库
+  MyApp.exe      the runtime, renamed
+  MyApp.acvm     the compiled bytecode
+  gui.dll        only the libraries the program actually reaches
 ```
 
-对方不需要装 Axiom、不需要编译器、不需要源码，双击 `MyApp.exe` 就能跑。
+The recipient needs no toolchain, no source, and no build step. They run `MyApp.exe`.
 
-两个设计决定贯穿全部代码：
+## Design
 
-- **依赖由编译器算，不重扫源码。** 重写一遍 `import` 解析就是第二套模块解析实现，
-  搜索规则改一次两套就分家——分家的后果不是报错，是打出一个缺库的包。
-- **验证不运行程序。** GUI 会弹窗、等输入会挂住。改查真正会坏的两件事：payload 能解析、
-  每个库都能从产物目录加载。
+Two decisions account for most of the code.
 
-## 为什么单独一个目录
+### The dependency closure is computed by the compiler
 
-它**不在 Axiom 源码树里**，桌面上独立一个项目。因为它是一个独立产品，不是 `acvm` 的一个子命令：
+A packager has to answer one question: which modules does this program reach, and which
+shared library does each of them live in?
 
-- 它自己单独分发、单独版本号
-- 它是唯一一个**产物交给没有工具链的人**的工具
-- 出问题时的失败模式完全不同：`acvm` 编译错是开发者的事，打包错是用户拿到坏包
+That question is already answered by the import resolver. Re-deriving it by scanning
+sources for `import` and `library` declarations would create a second implementation of
+module resolution, and the two would diverge the first time a search rule changed. The
+failure mode is not an error message — it is a bundle that omits a library, works on the
+machine that produced it, and traps on the first call at the recipient's.
 
-它把 Axiom 当作**库**来用：`ACVM_ROOT` 指向源码，`ACVM_BUILD` 指向那份源码的构建产物。
-它不负责构建 Axiom——缺库就直说，而不是假装配置成功。
+`Driver::dependencies()` therefore exposes what the import walk already collected: for each
+module, its `library` name, the path it was resolved at, and its declared name and version.
+The packager reads that list and does nothing else with module resolution.
 
-## 怎么构建
+### Verification does not execute the program
+
+"Run it once after packing" is the intuitive check, and it is not available here: a GUI
+program opens a window, and a program that reads input blocks the packager indefinitely.
+
+The two conditions that actually reach a user are checked instead, and neither of them
+executes code the program's author wrote:
+
+1. **The payload parses.** The bytecode is read back through the disassembler, which
+   catches truncation and container-version mismatch.
+2. **Every shipped library loads from the bundle.** Each shared object is loaded with its
+   own directory as the search root, which catches both a missing library and a library
+   whose own dependencies are missing.
+
+## Building
 
 ```sh
 ./build.sh
 ```
 
-`build.sh` 用的是这台机器上的工具链（`llvm-mingw` + CMake）。换机器时：
+`build.sh` uses the toolchain configured for this machine. To build elsewhere:
 
 ```sh
 cmake -S . -B build -G "MinGW Makefiles" \
       -DCMAKE_CXX_COMPILER=<llvm-mingw>/bin/clang++.exe \
-      -DACVM_ROOT=<Axiom 源码> -DACVM_BUILD=<那份源码的 build 目录>
+      -DACVM_ROOT=<Axiom checkout> -DACVM_BUILD=<its build directory>
 cmake --build build
 ```
 
-产物：`build/apack.exe`。
+The output is `build/apack.exe`.
 
-链接用的是 `--start-group`，不是手写顺序——静态库之间引用是双向的（VM 引用 JIT，JIT 引用 IR），
-手写顺序能撑到某个符号挪位置为止，然后以一个和改动无关的理由失败。
+This project consumes Axiom as a library and does not build it. `ACVM_ROOT` points at a
+checkout and `ACVM_BUILD` at a configured build of that checkout; if the libraries are
+absent, configuration stops with a message rather than producing a half-configured tree.
 
-## 运行时在哪找
+The static archives are linked inside `--start-group` rather than in a fixed order. The
+references between them run in both directions — the VM names the JIT, the JIT names the
+IR — so a hand-written order works until a symbol moves, and then fails for a reason
+unrelated to the change that moved it.
 
-`--runtime` 不给时，按这个顺序：
-
-1. `$ACVM_HOME`
-2. **自己所在目录**——但只在这个目录里真有 `acvm.exe` 时（拷到工具链旁边就该用那个）
-3. **编译时烤进去的构建目录**（`ACVM_RUNTIME_DIR`）
-
-第 3 条和编译器烤自己的标准库路径是同一个理由：一个找不到自己兄弟的工具，是每个调用者都要配置的工具。
-每一步都检查“这里真的是运行时吗”，猜错就往下走，而不是过一会儿报个看不懂的错。
-
-## 为什么链接 `acvm_driver` 而不是自己扫源码
-
-闭包（哪些模块、哪些 DLL）必须由**编译器**回答。
-
-自己写一遍 `import` 解析和 `library "x"` 映射，就是第二套模块解析实现；搜索规则改一次，
-两套就会分家。分家的后果不是报错，是**打出一个缺库的包**——它在你的机器上跑得好好的，
-到用户机器上第一次调用就炸。
-
-所以 `Driver::dependencies()` 是这条链路的地基：`expandImports` 在解析 import 的同一趟里
-把每个模块的 `library`、路径、`module`/`version` 记下来，打包器只是读它。
-
-## DLL 在哪找
-
-只有两个地方，**不查 `PATH`**：
-
-1. **声明它的 `.axd` 旁边** —— 这让项目本地模块（比如 `Axiom-gui/gui.axd` + `gui.dll`）能打对
-2. **运行时旁边** —— 标准库的 DLL 跟着编译器走，不跟着自己的源码走
-
-查 `PATH` 会让产物内容取决于打包机器的环境，而一个内容随机器变化的包不叫包。
-
-找不到就**打包失败**，退出码 3，并清掉已写出的字节码。缺 `parallel.dll` 的程序要到第一次
-调用 `parallel` 才崩，那时候包已经发出去了。
-
-## 验证：为什么不是"跑一遍"
-
-"打完跑一次"听起来最可靠，但它做不到：
-
-- GUI 程序一跑就弹窗
-- 等输入的程序会把打包器挂住
-
-所以验证的是**实际会坏的那两件事**，且都不执行程序写的代码：
-
-1. **payload 能读回来** —— `disassembleBytecode` 解析一遍，抓截断/版本不匹配
-2. **每个库都能从产物目录加载** —— `LoadLibraryEx(..., LOAD_WITH_ALTERED_SEARCH_PATH)`，
-   搜索根钉在产物目录，抓"少了库"和"库自己缺依赖"
-
-这两条覆盖了用户真正会遇到的那句"在我机器上打不开"。
-
-## 关于 `exec` 的一个坑（已修）
-
-`acvm run` 直接从 AST 编组外部调用，`acvm exec` 走的是从文件读回来的**参数计划**。
-v4 的容器格式只写了 `isArray`，**漏了 `isString`**——于是 `exec` 时字符串参数被当成一个标量，
-C 函数拿到的是 VM 内部描述符地址，第一次调用就段错误。
-
-这个 bug 只在 `exec` 路径出现，而打包器的产物**全是 `exec` 路径**，所以是打包器先撞上的。
-修法是把 `isString` 塞进 `isArray` 那个字节的 bit 1（格式大小不变），并把容器版本升到 v5：
-v4 的文件会被明确拒绝，而不是读进来再崩。
-
-回归测试在 `tests/test_e2e.cpp::a_saved_module_keeps_the_string_flag_of_external_parameters`。
-
-## 用法
+## Usage
 
 ```
 apack <file.ax> -o <dir> [options]
 
-  -o <dir>          产物目录（必需）
-  --name <name>     启动器名字，不含扩展名（默认取源文件名）
-  --runtime <dir>   acvm.exe 和标准库所在目录（默认见上文「运行时在哪找」）
-  -O0 .. -O4        优化等级（默认 -O2）
+  -o <dir>          output directory (required)
+  --name <name>     launcher name, without extension (default: the source's stem)
+  --runtime <dir>   where acvm.exe and the standard library live
+  -O0 .. -O4        optimization level (default: -O2)
 ```
 
-退出码：`0` 成功，`2` 用法/输入错误，`3` 缺库，`4` 拷贝失败，`5` 验证失败。
+## Where the runtime is found
 
-## 启动器是怎么工作的
+When `--runtime` is not given, three locations are tried in order:
 
-`MyApp.exe` 是 `acvm.exe` 改名的。不带参数启动时，它找**同目录同名的 `.acvm`** 并运行。
+1. `$ACVM_HOME`, for a shell that needs to select between toolchains.
+2. The packer's own directory — but only if it actually contains a runtime, which is the
+   case when the packer has been placed beside one.
+3. The build directory recorded at configure time.
 
-判断依据是**旁边那个文件**，不是自己的文件名——所以不依赖"它被改名成了什么"，
-`acvm` 本身也不会误触发（除非目录里真有个 `acvm.acvm`）。
+Each candidate is validated before it is used, so a wrong guess falls through to the next
+rather than failing later with an unrelated message. The third fallback exists for the same
+reason the compiler records its own standard-library path: a tool that cannot locate its
+siblings is a tool every caller must configure.
 
-带参数时行为不变，`acvm run x.ax` 照常。
+## Where the libraries are found
 
-## 还没做
+Two locations, in this order, and no `PATH` lookup:
 
-- **单文件**：把 payload 追加到 exe 尾部，读自己。不需要解压——10 个 stdlib 模块可以静态链进
-  一个 exe（已验证无符号冲突），届时产物是一个约 1.4MB 的 PE
-- **版本信息 / 图标 / 清单**：打包时用 `llvm-rc` 塞进 PE 资源
-- **校验和**：输出 `app.exe.sha256`
-- **自举**：用 `apack` 打包 `apack`，产物再打一次包——这是验收标准
-- **数据文件**：目前只打程序和库，程序用到的资源文件要手动放
+1. **Beside the `.axd` that declared the library.** This is what allows a module that lives
+   in the project rather than in the standard library — `gui`, for instance — to be packed
+   correctly.
+2. **Beside the runtime.** The standard library ships with the compiler, not with its own
+   sources.
+
+Searching `PATH` would make the contents of a bundle depend on the machine that produced
+it, and a bundle whose contents vary by machine is not a bundle.
+
+A library that cannot be found fails the pack with exit code 3, and the bytecode already
+written is removed. A program that needs `parallel.dll` does not fail until it calls
+`parallel`, which is after the bundle has been handed over.
+
+## How the launcher works
+
+`MyApp.exe` is the Axiom runtime, renamed. Started without arguments, it looks for
+`MyApp.acvm` in its own directory and runs it.
+
+The check is on the sibling file rather than on the executable's own name, so nothing
+depends on what the runtime was renamed to. Invoked with arguments, the runtime behaves as
+it always does.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `2` | usage error, or an input that cannot be read |
+| `3` | a required library was not found |
+| `4` | a file could not be copied |
+| `5` | verification failed |
+
+## An unrelated defect this tool uncovered
+
+`acvm run` marshals an external call directly from the AST. `acvm exec` uses the parameter
+plan stored in the bytecode file. Container format v4 recorded the array flag but not the
+string flag, so after a round trip a `string` argument was marshalled as a single scalar
+and the callee received the VM's descriptor address where it expected characters. The
+program faulted on the first external call that took a string.
+
+The defect was invisible to `run`, which never round-trips through a file, and every bundle
+this tool produces is executed through `exec` — which is how it was found.
+
+The flag is now packed into the same byte as the array flag, leaving the record size
+unchanged, and the container version was raised to v5. A v4 module is rejected explicitly
+rather than loaded and faulting later.
+
+Regression test:
+`tests/test_e2e.cpp::a_saved_module_keeps_the_string_flag_of_external_parameters`.
+
+## Not yet implemented
+
+- **Single-file output.** The payload would be appended to the executable and read from
+  itself; no extraction is required, because all ten standard-library modules link into one
+  binary without symbol conflicts. The result is a single PE of roughly 1.4 MB.
+- **Version resource, icon, and manifest**, embedded at pack time with `llvm-rc`.
+- **Checksums**, emitted as `app.exe.sha256`.
+- **Self-hosting**, meaning `apack` producing a bundle of `apack` that can itself produce
+  bundles.
+- **Data files.** Only the program and its libraries are packaged; resources the program
+  reads at run time must be placed alongside it.
