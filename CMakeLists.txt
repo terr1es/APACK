@@ -50,7 +50,7 @@ foreach(library IN LISTS ACVM_LIBRARIES)
     list(APPEND ACVM_LIB_PATHS "${ACVM_BUILD}/lib${library}.a")
 endforeach()
 
-add_executable(apack main.cpp Packer.cpp Resources.cpp)
+add_executable(apack main.cpp Packer.cpp Resources.cpp Sha256.cpp)
 target_include_directories(apack PRIVATE "${ACVM_ROOT}/include")
 
 # The resource identifiers (`RT_ICON`, `RT_VERSION`, ...) are defined in terms of

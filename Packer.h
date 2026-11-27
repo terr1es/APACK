@@ -36,6 +36,13 @@ struct PackRequest {
     std::string copyright;
     /// Path to an `.ico`. Empty leaves the runtime's own icon.
     std::string icon;
+
+    /// Files or directories copied into the bundle beside the executable: assets,
+    /// configuration, anything the program reads at run time.
+    ///
+    /// They are copied as they are, under their own names. A directory is copied whole.
+    /// Nothing inside them is rewritten, because nothing in them knows it was packaged.
+    std::vector<std::string> include;
 };
 
 /// One file the bundle needs.

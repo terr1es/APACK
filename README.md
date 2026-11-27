@@ -10,9 +10,10 @@ apack demo.ax -o dist/MyApp --name MyApp
 
 ```
 dist/MyApp/
-  MyApp.exe      the runtime, renamed
-  MyApp.acvm     the compiled bytecode
-  gui.dll        only the libraries the program actually reaches
+  MyApp.exe          the runtime, renamed
+  MyApp.acvm         the compiled bytecode
+  gui.dll            only the libraries the program actually reaches
+  MyApp.exe.sha256   a digest `sha256sum -c` can check
 ```
 
 ```sh
@@ -111,7 +112,33 @@ Identity, stamped into <name>.exe:
   --company <text>   company name
   --copyright <text> copyright line
   --icon <file.ico>  application icon
+
+Data:
+  --include <path>   copy a file or directory into the bundle; repeatable
 ```
+
+Every bundle also gets `<name>.exe.sha256`, in the format `sha256sum -c` reads.
+
+## Checksums
+
+The digest is written after verification, so what is hashed is what passed. The format is
+the digest, two spaces, and the file name — the two spaces are how `sha256sum` distinguishes
+text mode from binary, and getting them wrong makes the file useless for its one purpose.
+
+A digest is only worth publishing if the same inputs produce the same bytes. They do: the
+bytecode is deterministic, the copies are byte for byte, and the resource update preserves
+the image's timestamp. Two packs of one source produce one hash, which is what makes a
+published digest a claim someone can check rather than a number to take on faith.
+
+## Data files
+
+`--include` copies a file or a directory into the bundle beside the executable. A directory
+is copied whole, under its own name.
+
+They are not put inside the executable. A single file can carry arbitrary bytes — the payload
+proves that — but the program could not read them: Axiom's `io` opens paths, and a file inside
+an executable is not a path. So `--include` combined with `--single` produces an executable
+plus data, and the packer says so rather than pretending otherwise.
 
 ## Identity
 
@@ -229,14 +256,39 @@ rather than loaded and faulting later.
 Regression test:
 `tests/test_e2e.cpp::a_saved_module_keeps_the_string_flag_of_external_parameters`.
 
+## Self-hosting
+
+`selfhost.ax` is the same packager written in Axiom. It produces directory bundles: it asks
+the compiler for the dependency list, copies the runtime and the libraries, and stops there.
+
+```sh
+acvm run selfhost.ax -- demo.ax -o dist/MyApp --name MyApp
+```
+
+Why it exists: a packager is a tool, and a language that cannot build its own tools is a
+language with a ceiling. This makes that claim testable — if the program produces a bundle
+that runs, nothing in the work needed a feature the language did not have.
+
+The dependency list is the part that matters. `selfhost.ax` runs `acvm deps`, which performs
+the same import walk the compiler uses, so the two packagers cannot disagree about what a
+program needs. Scanning the sources here would have been the second implementation both were
+designed to avoid.
+
+It does not do single-file output, resources, or checksums. Single-file appends bytes and
+writes an eight-byte little-endian footer; a `string` can carry those bytes, but there is no
+way to assemble one byte at a time yet. The other two are PE structures and a hash, both
+belonging to the native packer.
+
+Writing it found a defect in `extralib/cli.ax`: `cliParseArgvWith` built its command line from
+Axiom's argument array, which starts at the first real argument, while the parser reads token
+0 as the program name — so every program using it silently lost its first argument. The
+regression test is `tests/cli_argv_check.ax`, the only check registered with arguments.
+
 ## Not yet implemented
 
-- **Checksums**, emitted as `app.exe.sha256`.
-- **Self-hosting**, meaning `apack` producing a bundle of `apack` that can itself produce
-  bundles. This is not as simple as it sounds: `apack` is a C++ program, not an Axiom one,
-  so there is nothing for it to package. Either the front end is rewritten in Axiom, or the
-  goal becomes "apack bundles a tool written in Axiom" — which is a different claim.
-- **Data files.** Only the program and its libraries are packaged; resources the program
-  reads at run time must be placed alongside it.
+- **Self-hosting the whole packer.** `selfhost.ax` covers directory bundles; single-file
+  output needs byte-level assembly in the language first.
 - **Cross-compilation.** The runtime is taken from the Axiom build the packer was configured
   against, so a bundle targets that build's platform.
+- **Code signing.** The structures are in place — a signed bundle is a signed PE — but no
+  signing step exists.

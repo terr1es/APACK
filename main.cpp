@@ -39,6 +39,11 @@ void printUsage(std::ostream& out) {
         << "  --copyright <text> Copyright line\n"
         << "  --icon <file.ico>  Application icon\n"
         << "\n"
+        << "Data:\n"
+        << "  --include <path>   Copy a file or directory into the bundle; repeatable.\n"
+        << "                     Files are copied beside the executable, because a program\n"
+        << "                     reads its assets through paths.\n"
+        << "\n"
         << "What it writes: <dir>/<name>.exe, <dir>/<name>.acvm, and every shared\n"
         << "library the program needs. The output is self-contained: it does not\n"
         << "read the toolchain, the standard library sources, or the source file.\n"
@@ -155,6 +160,11 @@ int main(int argc, char** argv) {
             request.optimize = arg[2] - '0';
         } else if (arg == "--single") {
             request.singleFile = true;
+        } else if (arg == "--include") {
+            if (i + 1 >= args.size()) {
+                return usageError("'--include' requires a path");
+            }
+            request.include.push_back(args[++i]);
         } else if (arg == "--app-version" || arg == "--company" || arg == "--copyright" ||
                    arg == "--icon") {
             if (i + 1 >= args.size()) {

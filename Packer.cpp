@@ -2,6 +2,7 @@
 #include "Packer.h"
 
 #include "Resources.h"
+#include "Sha256.h"
 
 #include "acvm/Driver/Driver.h"
 #include "acvm/Driver/Payload.h"
@@ -360,21 +361,85 @@ int pack(const PackRequest& request, std::ostream& out, std::ostream& err) {
         }
     }
 
+    // ── data files ──────────────────────────────────────────────────────────
+    //
+    // Copied beside the executable, not into it. A single file can carry arbitrary bytes --
+    // the payload proves that -- but the program could not read them: Axiom's `io` opens
+    // paths, and a file inside an executable is not a path. Until there is a way to expose
+    // an embedded entry to the program, data files are files.
+    std::vector<std::string> included;
+    for (const std::string& item : request.include) {
+        const fs::path from = fs::path(item).lexically_normal();
+        if (!fs::exists(from, error)) {
+            err << "apack: --include cannot find '" << item << "'\n";
+            fs::remove(payload, error);
+            return 4;
+        }
+        const fs::path to = outputDir / from.filename();
+        if (fs::is_directory(from, error)) {
+            fs::copy(from, to,
+                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, error);
+        } else {
+            fs::copy_file(from, to, fs::copy_options::overwrite_existing, error);
+        }
+        if (error) {
+            err << "apack: cannot copy '" << item << "': " << error.message() << "\n";
+            return 4;
+        }
+        included.push_back(to.filename().generic_string());
+    }
+
+    // ── checksum ────────────────────────────────────────────────────────────
+    //
+    // After verification, so what is hashed is what passed. The format is the one
+    // `sha256sum -c` reads: the digest, two spaces, and the file name -- the two spaces are
+    // how that tool distinguishes text mode from binary, and getting it wrong makes the file
+    // unusable for the one purpose it has.
+    //
+    // A digest is only worth publishing if the same inputs produce the same bytes. They do:
+    // the bytecode is deterministic, the copies are byte for byte, and the resource update
+    // preserves the image's timestamp. Two packs of one source produce one hash.
+    std::string digestError;
+    const std::string digest = apack::fileDigest(launcherPath.string(), digestError);
+    if (digest.empty()) {
+        err << "apack: " << digestError << "\n";
+        return 5;
+    }
+    {
+        const fs::path sumPath = outputDir / (appName + ".exe.sha256");
+        std::ofstream sum(sumPath, std::ios::binary | std::ios::trunc);
+        sum << digest << "  " << appName << ".exe\n";
+        sum.flush();
+        if (!sum) {
+            err << "apack: cannot write " << sumPath.generic_string() << "\n";
+            return 4;
+        }
+    }
+
     out << "packed " << source.filename().generic_string() << " -> " << outputDir.generic_string()
         << "/\n";
     if (request.singleFile) {
         out << "  " << appName << ".exe   " << fs::file_size(launcherPath, error)
             << " bytes   runtime and program, self-contained\n";
-        return 0;
-    }
-    out << "  " << appName << ".exe      runtime\n";
-    out << "  " << appName << ".acvm     " << bytes.size() << " bytes\n";
-    for (const BundleEntry& entry : entries) {
-        const fs::path to = fs::path(entry.to);
-        if (to.filename() == (appName + ".exe")) {
-            continue;
+    } else {
+        out << "  " << appName << ".exe      runtime\n";
+        out << "  " << appName << ".acvm     " << bytes.size() << " bytes\n";
+        for (const BundleEntry& entry : entries) {
+            const fs::path to = fs::path(entry.to);
+            if (to.filename() == (appName + ".exe")) {
+                continue;
+            }
+            out << "  " << to.filename().generic_string() << "\n";
         }
-        out << "  " << to.filename().generic_string() << "\n";
+    }
+    out << "  " << appName << ".exe.sha256\n";
+    for (const std::string& name : included) {
+        out << "  " << name << "\n";
+    }
+    if (request.singleFile && !included.empty()) {
+        out << "\nnote: --include put data files beside the executable, so the bundle is no\n"
+            << "      longer one file. A program reads its assets through paths, and a file\n"
+            << "      inside an executable is not a path.\n";
     }
     return 0;
 }
