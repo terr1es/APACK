@@ -33,6 +33,12 @@ void printUsage(std::ostream& out) {
         << "                    appended to a statically linked runtime, so nothing sits\n"
         << "                    beside it and nothing is extracted at run time\n"
         << "\n"
+        << "Identity, stamped into <name>.exe:\n"
+        << "  --app-version <v>  File and product version, e.g. 1.2.0 (default: 1.0.0.0)\n"
+        << "  --company <text>   Company name\n"
+        << "  --copyright <text> Copyright line\n"
+        << "  --icon <file.ico>  Application icon\n"
+        << "\n"
         << "What it writes: <dir>/<name>.exe, <dir>/<name>.acvm, and every shared\n"
         << "library the program needs. The output is self-contained: it does not\n"
         << "read the toolchain, the standard library sources, or the source file.\n"
@@ -149,6 +155,21 @@ int main(int argc, char** argv) {
             request.optimize = arg[2] - '0';
         } else if (arg == "--single") {
             request.singleFile = true;
+        } else if (arg == "--app-version" || arg == "--company" || arg == "--copyright" ||
+                   arg == "--icon") {
+            if (i + 1 >= args.size()) {
+                return usageError("'" + arg + "' requires a value");
+            }
+            const std::string value = args[++i];
+            if (arg == "--app-version") {
+                request.version = value;
+            } else if (arg == "--company") {
+                request.company = value;
+            } else if (arg == "--copyright") {
+                request.copyright = value;
+            } else {
+                request.icon = value;
+            }
         } else if (arg.size() > 1 && arg[0] == '-') {
             return usageError("unknown option '" + arg + "'");
         } else {

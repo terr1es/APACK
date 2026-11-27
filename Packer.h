@@ -28,6 +28,14 @@ struct PackRequest {
     /// standard library, so the result has no files beside it. Nothing is extracted at run
     /// time: the program is read out of the executable's own bytes.
     bool singleFile = false;
+
+    /// Identity stamped into the produced executable: the version resource, the icon, and
+    /// the manifest. `name` comes from `appName`; these are the rest.
+    std::string version = "1.0.0.0";
+    std::string company;
+    std::string copyright;
+    /// Path to an `.ico`. Empty leaves the runtime's own icon.
+    std::string icon;
 };
 
 /// One file the bundle needs.

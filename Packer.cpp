@@ -1,6 +1,8 @@
 //===--- Packer.cpp - Assembles a runnable bundle from a .ax program ------===//
 #include "Packer.h"
 
+#include "Resources.h"
+
 #include "acvm/Driver/Driver.h"
 #include "acvm/Driver/Payload.h"
 #include "acvm/IR/Serializer.h"
@@ -274,14 +276,36 @@ int pack(const PackRequest& request, std::ostream& out, std::ostream& err) {
         }
     }
 
+    // ── identity ────────────────────────────────────────────────────────────
+    //
+    // Before the payload is appended: updating resources rewrites the image's resource
+    // section, and anything already sitting after the last section would be lost.
+    //
+    // Both modes get this. A directory bundle is no less an application than a single-file
+    // one, and an executable with a blank Details tab looks unfinished either way.
+    apack::AppInfo identity;
+    identity.name = appName;
+    identity.version = request.version;
+    identity.company = request.company;
+    identity.copyright = request.copyright;
+    identity.icon = request.icon;
+    identity.originalFilename = appName + ".exe";
+
+    const fs::path launcherPath = outputDir / (appName + ".exe");
+    std::string resourceError;
+    if (!apack::applyResources(launcherPath.string(), identity, resourceError)) {
+        err << "apack: " << resourceError << "\n";
+        fs::remove(payload, error);
+        return 6;
+    }
+
     // ── assemble ────────────────────────────────────────────────────────────
     //
     // Single file: the payload is appended to the runtime, and the intermediate bytecode is
     // removed, so what remains in the output directory is one executable and nothing else.
     if (request.singleFile) {
-        const fs::path launcher = outputDir / (appName + ".exe");
         std::string appendError;
-        if (!appendPayload(launcher.string(), payload.string(), appendError)) {
+        if (!appendPayload(launcherPath.string(), payload.string(), appendError)) {
             err << "apack: " << appendError << "\n";
             fs::remove(payload, error);
             return 4;
@@ -339,8 +363,7 @@ int pack(const PackRequest& request, std::ostream& out, std::ostream& err) {
     out << "packed " << source.filename().generic_string() << " -> " << outputDir.generic_string()
         << "/\n";
     if (request.singleFile) {
-        const fs::path launcher = outputDir / (appName + ".exe");
-        out << "  " << appName << ".exe   " << fs::file_size(launcher, error)
+        out << "  " << appName << ".exe   " << fs::file_size(launcherPath, error)
             << " bytes   runtime and program, self-contained\n";
         return 0;
     }

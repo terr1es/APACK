@@ -50,8 +50,16 @@ foreach(library IN LISTS ACVM_LIBRARIES)
     list(APPEND ACVM_LIB_PATHS "${ACVM_BUILD}/lib${library}.a")
 endforeach()
 
-add_executable(apack main.cpp Packer.cpp)
+add_executable(apack main.cpp Packer.cpp Resources.cpp)
 target_include_directories(apack PRIVATE "${ACVM_ROOT}/include")
+
+# The resource identifiers (`RT_ICON`, `RT_VERSION`, ...) are defined in terms of
+# `MAKEINTRESOURCE`, which resolves to the ANSI or the wide spelling depending on this
+# macro. Every call in the source names the wide entry point explicitly, so without it the
+# identifiers are `char*` and do not match the functions they are passed to.
+if(WIN32)
+    target_compile_definitions(apack PRIVATE UNICODE _UNICODE)
+endif()
 
 # Where the runtime lives when `--runtime` is not given. Baked in for the same reason the
 # compiler bakes in its standard-library path: a tool that cannot find its own siblings is

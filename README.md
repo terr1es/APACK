@@ -26,6 +26,9 @@ dist/MyApp/
 
 The recipient needs no toolchain, no source, and no build step. They run `MyApp.exe`.
 
+Both forms carry a version resource and an application manifest, and take an icon — see
+[Identity](#identity).
+
 ## Design
 
 Two decisions account for most of the code.
@@ -102,7 +105,36 @@ apack <file.ax> -o <dir> [options]
   --runtime <dir>   where acvm.exe and the standard library live
   -O0 .. -O4        optimization level (default: -O2)
   --single          one executable instead of a directory
+
+Identity, stamped into <name>.exe:
+  --app-version <v>  file and product version, e.g. 1.2.0 (default: 1.0.0.0)
+  --company <text>   company name
+  --copyright <text> copyright line
+  --icon <file.ico>  application icon
 ```
+
+## Identity
+
+Every produced executable gets a version resource, an application manifest, and — when
+`--icon` is given — an icon. Without them the file shows a blank Details tab and the generic
+application glyph in Explorer, which is the difference between something that runs and
+something someone will install.
+
+The manifest is not decoration. It requests the version 6 common controls, and without that
+every button, list and group box in a GUI program is drawn by the Windows 95 code path. It
+also declares per-monitor DPI awareness, so a program is not rendered at 96 DPI and stretched
+on a scaled display, and `asInvoker`, so it does not ask for elevation it does not need.
+
+The resources are written with `BeginUpdateResource` rather than by compiling a `.rc` with
+`llvm-rc`. `llvm-rc` produces a `.res`, and folding a `.res` into an existing image means
+relinking it — which would require a linker on the machine doing the packing, and that
+machine is the user's. The update API edits the image directly, so the packer stays one
+self-contained binary.
+
+One observable side effect: the update rewrites the image, and debug sections do not survive
+it. A bundle is roughly 450 KB smaller than the runtime it was built from and carries no
+symbol information. That is the right trade for something being shipped, and it is worth
+knowing if you were expecting to attach a debugger to a bundle.
 
 ## Single-file output
 
@@ -177,6 +209,7 @@ it always does.
 | `3` | a required library was not found |
 | `4` | a file could not be copied |
 | `5` | verification failed |
+| `6` | identity resources could not be written |
 
 ## An unrelated defect this tool uncovered
 
@@ -198,9 +231,12 @@ Regression test:
 
 ## Not yet implemented
 
-- **Version resource, icon, and manifest**, embedded at pack time with `llvm-rc`.
 - **Checksums**, emitted as `app.exe.sha256`.
 - **Self-hosting**, meaning `apack` producing a bundle of `apack` that can itself produce
-  bundles.
+  bundles. This is not as simple as it sounds: `apack` is a C++ program, not an Axiom one,
+  so there is nothing for it to package. Either the front end is rewritten in Axiom, or the
+  goal becomes "apack bundles a tool written in Axiom" — which is a different claim.
 - **Data files.** Only the program and its libraries are packaged; resources the program
   reads at run time must be placed alongside it.
+- **Cross-compilation.** The runtime is taken from the Axiom build the packer was configured
+  against, so a bundle targets that build's platform.
