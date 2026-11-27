@@ -126,7 +126,7 @@ function main():void {
         return;
     }
     if (cliPositionalCount(args) < 1) {
-        print("usage: selfhost <file.ax> -o <dir> [--name <name>] [--runtime <dir>]\n");
+        print("usage: apack <file.ax> -o <dir> [--name <name>] [--runtime <dir>]\n");
         docFree(#d);
         return;
     }
@@ -146,7 +146,21 @@ function main():void {
     ptr char pathBuffer = alloc(pathCapacity * 2) as ptr char;
     int pathLength = exePathInto(pathBuffer, pathCapacity);
     string selfPath = pathLength > 0 ? makeString(pathBuffer, pathLength) : "";
+
+    // The compiler is not necessarily this program. Once APACK has been packaged by itself,
+    // its own executable is a launcher, and asking that launcher to compile runs this
+    // program again with "build" as its first argument -- which is exactly what happened
+    // the first time the round trip was tried. The compiler is looked for in the runtime
+    // directory instead, where the standard library lives too.
     string runtimeDir = cliValue(args, "runtime", dirName(selfPath));
+    string compiler = runtimeDir + "/acvm.exe";
+    if (!fileExists(compiler)) { compiler = runtimeDir + "/acvm"; }
+    if (!fileExists(compiler)) {
+        print("apack: cannot find acvm in "); print(runtimeDir); print("\n");
+        print("       pass --runtime <dir> to point at the toolchain\n");
+        docFree(#d);
+        return;
+    }
 
     if (!fileExists(source)) {
         print("apack: no such file: "); print(source); print("\n");
@@ -160,7 +174,7 @@ function main():void {
     // ── compile ─────────────────────────────────────────────────────────────
     ptr int code = alloc(4) as ptr int;
     code[0] = 0;
-    string buildOutput = runCapture(quoted(selfPath) + " build " + quoted(source) + " -o " +
+    string buildOutput = runCapture(quoted(compiler) + " build " + quoted(source) + " -o " +
                                     quoted(payload), code);
     if (code[0] != 0) {
         print("apack: compile failed\n");
@@ -175,7 +189,7 @@ function main():void {
     // One library name per line, from the compiler's own import walk. The same list the
     // native packer gets by calling into the driver directly.
     code[0] = 0;
-    string libraries = runCapture(quoted(selfPath) + " deps " + quoted(source), code);
+    string libraries = runCapture(quoted(compiler) + " deps " + quoted(source), code);
     if (code[0] != 0) {
         print("apack: cannot read the dependency list\n");
         removeFile(payload);
