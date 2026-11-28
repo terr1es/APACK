@@ -5,6 +5,19 @@ build/
 dist/
 out/
 
+# Packaged artifacts, wherever they land.
+#
+# `dist/` and `out/` were the only rules, so they only covered packing into the expected
+# place. A test run that wrote to a mangled temporary path put two 2.5 MB copies of the
+# runtime into the repository as `Userstb918AppDataLocalTemp/...`, and nothing stopped them:
+# the directory was neither `dist` nor `out`, and the file was an `.exe`.
+#
+# These two extensions are the shape of the output, not the shape of the path, so this
+# catches a bundle no matter how its destination got mangled. Neither belongs in a source
+# tree: `.acvm` is a compiled payload and `.exe` is a copied runtime.
+*.exe
+*.acvm
+
 # Editor and OS noise.
 .vscode/
 .idea/

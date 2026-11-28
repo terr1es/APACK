@@ -134,5 +134,21 @@ else
     pass "a missing runtime is refused"
 fi
 
+# --- nothing is written outside the scratch directory ----------------------
+#
+# `-o` is absolute and points into `$WORK`, so a correct pack leaves the source tree alone.
+# One did not: a mangled `-o` value was taken as a relative path, and the packager created
+# `Userstb918AppDataLocalTemp/tmp.gIH1mmepSO/...` here -- two 2.5 MB copies of the runtime,
+# which went into the repository because nothing looked. This is the check that looks.
+#
+# The list is the whole source tree. A new file at the top level is either deliberate (and
+# belongs in this list) or a pack that wrote where it was not told to.
+stray="$(cd "$HERE/.." && ls -A | grep -v -E '^(\.git|\.gitattributes|\.gitignore|LICENSE|README\.md|apack\.ax|tests)$' || true)"
+if [ -n "$stray" ]; then
+    fail "the source tree gained: $(printf '%s' "$stray" | tr '\n' ' ')"
+else
+    pass "nothing was written outside the scratch directory"
+fi
+
 printf '\n%d failure(s)\n' "$failures"
 [ "$failures" -eq 0 ]
