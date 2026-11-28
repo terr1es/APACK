@@ -68,6 +68,46 @@ function stemOf(string path):string {
     eof: pass;
 }
 
+/// The last component of a path, extension intact: `a/b/libz.so` -> `libz.so`.
+///
+/// Needed because a shared object keeps the name it was found under. `stemOf` cuts at the last
+/// dot, so using it here would turn `libz.so` into `libz` and write a file no loader will open.
+function baseName(string path):string {
+    string text = replaceAll(path, "\\", "/");
+    int cut = -1;
+    int at = 0;
+    while (at < text.length) {
+        int found = indexOf(text[at .. text.length], "/");
+        if (found < 0) { break; }
+        cut = at + found;
+        at = cut + 1;
+    }
+    if (cut < 0) { return text; }
+    return text[cut + 1 .. text.length];
+    eof: pass;
+}
+
+/// The full path of `name`'s shared object in `dir`, or "" when none of its spellings is there.
+///
+/// The spellings come from `sharedLibraryNames` in stdlib/os.ax, which is the one place that
+/// knows them: `name.dll` on Windows, `libname.so` and `name.so` on Linux, and the `.dylib`
+/// pair on macOS. A packager that spelled one of them itself -- and this one did, with ".dll"
+/// in eight places -- produces a bundle that works on exactly the platform its author used.
+function libraryIn(string dir, string name):string {
+    string candidates = sharedLibraryNames(name);
+    SplitList parts = makeSplit(candidates, "\n");
+    string found = "";
+    for (int i = 0; i < splitCount(#parts); i++) {
+        string candidate = splitAt(#parts, i);
+        if (candidate.length == 0) { continue; }
+        string path = dir + "/" + candidate;
+        if (fileExists(path)) { found = path; break; }
+    }
+    splitFree(#parts);
+    return found;
+    eof: pass;
+}
+
 /// Runs a command and returns its standard output.
 ///
 /// `runCaptureInto` reports the exit code through an array, and returns the byte count
@@ -135,19 +175,23 @@ function quoted(string path):string {
 /// Removes what a failed pack wrote.
 ///
 /// A bundle is several files, and a failure partway through leaves some of them behind. That
-/// is worse than writing nothing: a directory holding `MyApp.exe` and no program looks
+/// is worse than writing nothing: a directory holding a launcher and no program looks
 /// finished, and the person who receives it reports "it opens and prints some usage text"
 /// rather than "the pack failed".
 ///
+/// `writtenFiles` is the names actually written, one per line, not the logical library names.
+/// The difference matters: the file copied for `library "z"` is `libz.so` on Linux, and a
+/// cleanup that rebuilt the name from the logical one would remove nothing.
+///
 /// Only the files this run created are named, so a directory that already held something is
 /// not emptied.
-function cleanup(string outputDir, string appName, string libraries):void {
-    removeFile(outputDir + "/" + appName + ".exe");
+function cleanup(string outputDir, string appName, string writtenFiles):void {
+    removeFile(outputDir + "/" + appName + executableSuffix());
     removeFile(outputDir + "/" + appName + ".acvm");
-    SplitList parts = makeSplit(libraries, "\n");
+    SplitList parts = makeSplit(writtenFiles, "\n");
     for (int i = 0; i < splitCount(#parts); i++) {
         string name = splitAt(#parts, i);
-        if (name.length > 0) { removeFile(outputDir + "/" + name + ".dll"); }
+        if (name.length > 0) { removeFile(outputDir + "/" + name); }
     }
     splitFree(#parts);
     eof: pass;
@@ -200,8 +244,12 @@ function main():void {
     // the first time the round trip was tried. The compiler is looked for in the runtime
     // directory instead, where the standard library lives too.
     string runtimeDir = cliValue(args, "runtime", dirName(selfPath));
-    string compiler = runtimeDir + "/acvm.exe";
-    if (!fileExists(compiler)) { compiler = runtimeDir + "/acvm"; }
+    //  `acvm` plus this platform's executable suffix, not ".exe" first and "acvm" as a
+    //  fallback. The fallback version found a POSIX compiler, compiled the program, verified
+    //  the payload, and then failed at the copy below -- which read
+    //  `runtimeDir + "/acvm.exe"` unconditionally -- reporting a missing runtime that was in
+    //  the directory it had just been reading from.
+    string compiler = runtimeDir + "/acvm" + executableSuffix();
     if (!fileExists(compiler)) {
         print("apack: cannot find acvm in "); print(runtimeDir); print("\n");
         print("       pass --runtime <dir> to point at the toolchain\n");
@@ -258,8 +306,12 @@ function main():void {
         stop(5);
     }
 
-    // ── copy ────────────────────────────────────────────────────────────────
-    if (copyFile(runtimeDir + "/acvm.exe", outputDir + "/" + appName + ".exe") != 0) {
+    //  ── copy ────────────────────────────────────────────────────────────────
+    //
+    //  The source is the compiler that was found, not a name rebuilt here. On Windows it is
+    //  `acvm.exe` and the launcher is `MyApp.exe`; on Linux it is `acvm` and the launcher is
+    //  `MyApp`, with no suffix at all.
+    if (copyFile(compiler, outputDir + "/" + appName + executableSuffix()) != 0) {
         print("apack: cannot copy the runtime from "); print(runtimeDir); print("\n");
         removeFile(payload);
         docFree(#d);
@@ -268,7 +320,7 @@ function main():void {
 
     SplitList lines = makeSplit(libraries, "\n");
     int copied = 0;
-    string copiedNames = "";   // one per line, for cleanup if a later step fails
+    string writtenFiles = "";   // file names actually written, one per line, for cleanup
     for (int i = 0; i < splitCount(#lines); i++) {
         // `_popen` goes through cmd, so the output is CRLF: splitting on "\n" leaves a
         // trailing carriage return on every line but the last, and a file name with an
@@ -287,28 +339,31 @@ function main():void {
         // sitting right next to the source.
         string from = "";
         if (declaredPath.length > 0) {
-            string beside = dirName(declaredPath) + "/" + name + ".dll";
-            if (fileExists(beside)) { from = beside; }
+            from = libraryIn(dirName(declaredPath), name);
         }
         if (from.length == 0) {
-            string standard = runtimeDir + "/" + name + ".dll";
-            if (fileExists(standard)) { from = standard; }
+            from = libraryIn(runtimeDir, name);
         }
         if (from.length == 0) {
             print("apack: required library not found: "); print(name); print("\n");
             print("       looked beside "); print(declaredPath); print("\n");
             print("       and beside the runtime ("); print(runtimeDir); print(")\n");
+            print("       as: "); print(sharedLibraryNames(name)); print("\n");
             splitFree(#lines);
-            cleanup(outputDir, appName, copiedNames);
+            cleanup(outputDir, appName, writtenFiles);
             docFree(#d);
             stop(3);
         }
 
-        string to = outputDir + "/" + name + ".dll";
+        //  The file keeps the name it was found under. `libz.so` copied as `z.so` is a file
+        //  no loader opens, and the verify step below would then blame the library rather
+        //  than the copy.
+        string fileName = baseName(from);
+        string to = outputDir + "/" + fileName;
         if (copyFile(from, to) != 0) {
             print("apack: cannot copy "); print(from); print("\n");
             splitFree(#lines);
-            cleanup(outputDir, appName, copiedNames);
+            cleanup(outputDir, appName, writtenFiles);
             docFree(#d);
             stop(4);
         }
@@ -318,19 +373,19 @@ function main():void {
         // success in both cases -- so the question asked here is not "did it copy" but "does
         // it load from where it now sits".
         if (!libraryLoads(to)) {
-            print("apack: "); print(name); print(".dll does not load from the bundle\n");
+            print("apack: "); print(fileName); print(" does not load from the bundle\n");
             splitFree(#lines);
-            cleanup(outputDir, appName, copiedNames);
+            cleanup(outputDir, appName, writtenFiles);
             docFree(#d);
             stop(5);
         }
         copied = copied + 1;
-        copiedNames = copiedNames + name + "\n";
+        writtenFiles = writtenFiles + fileName + "\n";
     }
     splitFree(#lines);
 
     print("packed "); print(source); print(" -> "); print(outputDir); print("/\n");
-    print("  "); print(appName); print(".exe\n");
+    print("  "); print(appName); print(executableSuffix()); print("\n");
     print("  "); print(appName); print(".acvm\n");
     if (copied > 0) {
         print("  "); print(itoa(copied, 10)); print(" librar");

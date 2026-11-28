@@ -11,6 +11,14 @@
 set -e
 
 ACVM="${ACVM:-acvm}"
+
+# The launcher carries an executable suffix on Windows and none elsewhere. Hard-coding
+# ".exe" here is how this file would pass on the machine it was written on and fail on
+# every other one -- the same defect the packager itself had.
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) EXE=".exe" ;;
+    *) EXE="" ;;
+esac
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APACK="$(cd "$HERE/.." && pwd)/apack.ax"
 WORK="$(cd "$(mktemp -d)" && pwd)"
@@ -40,12 +48,12 @@ pack() {
 # --- a bundle runs ---------------------------------------------------------
 
 if pack hello hello >/dev/null 2>&1; then
-    if [ ! -f "$WORK/hello/hello.exe" ]; then
+    if [ ! -f "$WORK/hello/hello$EXE" ]; then
         fail "hello: no launcher was produced"
     elif [ ! -f "$WORK/hello/hello.acvm" ]; then
         fail "hello: no payload was produced"
     else
-        actual="$("$WORK/hello/hello.exe" 2>&1 | tr -d '\r' || true)"
+        actual="$("$WORK/hello/hello$EXE" 2>&1 | tr -d '\r' || true)"
         expected="$(printf 'hello\nworld')"
         if [ "$actual" = "$expected" ]; then
             pass "a bundle runs and prints what the program prints"
@@ -61,7 +69,7 @@ fi
 # --- a bundle receives its arguments ---------------------------------------
 
 if pack args args >/dev/null 2>&1; then
-    actual="$("$WORK/args/args.exe" alpha beta 2>&1 | tr -d '\r' || true)"
+    actual="$("$WORK/args/args$EXE" alpha beta 2>&1 | tr -d '\r' || true)"
     expected="$(printf 'count=2\narg=alpha\narg=beta')"
     if [ "$actual" = "$expected" ]; then
         pass "a bundle hands its arguments to the program"
@@ -70,6 +78,39 @@ if pack args args >/dev/null 2>&1; then
     fi
 else
     fail "args: the pack itself failed"
+fi
+
+# --- a bundle carries its shared libraries ---------------------------------
+#
+# The only fixture that has any. Without it the library loop -- find, copy, verify, and the
+# cleanup that names what was written -- was never executed by this file, and it contained the
+# ".dll" literals that made the packager Windows-only.
+
+if pack withlib withlib >/dev/null 2>&1; then
+    missing=""
+    for lib in os io; do
+        found=""
+        for candidate in "$WORK/withlib/$lib.dll" "$WORK/withlib/lib$lib.so" \
+                         "$WORK/withlib/$lib.so" "$WORK/withlib/lib$lib.dylib" \
+                         "$WORK/withlib/$lib.dylib"; do
+            if [ -f "$candidate" ]; then found="$candidate"; fi
+        done
+        [ -n "$found" ] || missing="$missing $lib"
+    done
+    if [ -n "$missing" ]; then
+        fail "withlib: no shared object for$missing"
+    else
+        pass "a bundle carries the shared objects it needs, under their own names"
+    fi
+    actual="$("$WORK/withlib/withlib$EXE" 2>&1 | tr -d '\r' || true)"
+    if [ -n "$actual" ]; then
+        pass "a bundle with libraries runs"
+    else
+        fail "withlib: the launcher printed nothing"
+    fi
+else
+    fail "withlib: the pack itself failed"
+    sed 's/^/        /' "$WORK/withlib.pack.log" 2>/dev/null || true
 fi
 
 # --- a failed pack leaves nothing ------------------------------------------

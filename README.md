@@ -48,16 +48,41 @@ acvm deps demo.ax
 io	C:/Axiom/stdlib/io.axd
 ```
 
-The library name, a tab, and the file that declared it. Scanning the sources for `import`
-and `library` declarations here would be a second implementation of module resolution, and
-the two would diverge the first time a search rule changed. The failure mode is not an error
-message — it is a bundle that omits a library, works on the machine that produced it, and
-traps on the first call at the recipient's.
+The library name, a tab, and the file that declared it — the second column is wherever this
+machine's standard library happens to live, not a fixed location. Scanning the sources for
+`import` and `library` declarations here would be a second implementation of module
+resolution, and the two would diverge the first time a search rule changed. The failure mode
+is not an error message — it is a bundle that omits a library, works on the machine that
+produced it, and traps on the first call at the recipient's.
 
 The path is not decoration. A module that lives in the project rather than in the standard
 library keeps its shared object beside its own `.axd`, so the search starts there and falls
 back to the runtime directory. Knowing only the name would send it to the wrong place and
 report a missing library that is sitting right next to the source.
+
+## What a library file is called
+
+`acvm deps` reports the name a program declared — `io` — and the file on disk is not that
+name. It is `io.dll` on Windows, and on Linux and macOS there are two spellings to try,
+because the system's own libraries carry a `lib` prefix and this toolchain's modules do not:
+
+| platform | candidates, in order |
+|---|---|
+| Windows | `io.dll` |
+| Linux | `libio.so`, `io.so` |
+| macOS | `libio.dylib`, `io.dylib` |
+
+That table lives in `sharedLibraryNames` in `stdlib/os.ax`, and APACK asks for it rather
+than spelling a name itself. It did spell one itself once — `name + ".dll"` in eight
+places — and the result was a packager that worked on Windows and, on Linux, found its
+compiler, compiled the program, verified the payload, and then failed at the copy with
+"cannot copy the runtime".
+
+The reason that survived as long as it did is worth recording: the rule itself was correct,
+but it read the platform it was running on, so its POSIX half could only ever be exercised
+by a POSIX test run, and there was none. `sharedLibraryNamesFor(platform, name)` takes the
+platform as an argument now, and ACVM's `shared_library_names_check.ax` asks it about all
+three from whichever machine is running the suite.
 
 ## Verification
 

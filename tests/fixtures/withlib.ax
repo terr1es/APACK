@@ -1,0 +1,18 @@
+//  withlib.ax -- a program that pulls in shared libraries, so the packer's library loop runs.
+//
+//  `hello.ax` and `args.ax` have no dependencies at all: `acvm deps` prints nothing for them,
+//  which meant every test passed while the code that finds, copies and verifies a shared
+//  object was never executed. That code spelled the file name itself -- ".dll" in eight
+//  places -- and would have failed on Linux at the copy, after compiling and verifying
+//  successfully.
+//
+//  Importing `os` is enough: it depends on `io`, and both are real shared objects. The output
+//  is the platform's name, so the assertion is about behaviour rather than about a constant.
+
+function import (return:(os));
+
+function main():void {
+    print(platformName());
+    print("\n");
+    eof: pass;
+}
